@@ -1,4 +1,4 @@
-package main
+package expt1
 
 import (
 	"testing"
@@ -40,7 +40,7 @@ func TestSuperNode_makeClientGroup(t *testing.T) {
 		name   string
 		fields *SuperNode
 	}{
-		// TODO: Add test cases.
+		// Add test cases.
 		{"1", NewSuperNode(70)},
 		{"2", NewSuperNode(5000)},
 	}

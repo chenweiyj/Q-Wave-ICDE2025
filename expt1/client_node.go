@@ -1,4 +1,4 @@
-package main
+package expt1
 
 import (
 	"bufio"
@@ -6,6 +6,8 @@ import (
 	"log"
 	"strconv"
 	"time"
+
+	. "chain/util/const"
 )
 
 type ClientNode struct {
@@ -14,14 +16,25 @@ type ClientNode struct {
 	block  string
 	votes  map[int]struct{}
 	total  int
+	sendMsgDelay  time.Duration
 }
 
-func NewClientNode(rw *bufio.ReadWriter) *ClientNode {
+func NewClientNode(rw *bufio.ReadWriter, delay int) *ClientNode {
 	c := new(ClientNode)
+	c.sendMsgDelay = time.Duration(delay) * time.Millisecond
 	c.rw = rw
 	c.votes = make(map[int]struct{})
 	c.clear()
 	return c
+}
+
+func (c *ClientNode) sendMessage(s string) {
+	if c.sendMsgDelay > 0 {
+		time.Sleep(c.sendMsgDelay) // 延迟200毫秒
+	}
+
+	c.rw.WriteString(s)
+	c.rw.Flush()
 }
 
 func (c *ClientNode) clear() {
@@ -53,8 +66,7 @@ func (c *ClientNode) process() {
 						log.Println("[DEBUG]send done message:", s, c.client)
 					}
 
-					c.rw.WriteString(s)
-					c.rw.Flush()
+					c.sendMessage(s)
 
 					isDone = true
 					time.Sleep(time.Second)
@@ -115,8 +127,7 @@ func (c *ClientNode) recvMsg(msg string) {
 func (c *ClientNode) recvLeader() {
 	// send block to super node
 	s := "1\n"
-	c.rw.WriteString(s)
-	c.rw.Flush()
+	c.sendMessage(s)
 }
 
 // block: "[TYPE][CREATE_VOTE][client]\n"
@@ -140,8 +151,7 @@ func (c *ClientNode) recvBlock(str string) {
 	if v == "1" {
 		// create vote: "[TYPE][client]\n"
 		s := fmt.Sprintf("%d%s", 2, str[2:])
-		c.rw.WriteString(s)
-		c.rw.Flush()
+		c.sendMessage(s)
 	}
 
 	// close(ch)

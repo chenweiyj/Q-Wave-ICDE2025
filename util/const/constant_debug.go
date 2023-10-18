@@ -1,5 +1,5 @@
 //go:build debug
 // +build debug
 
-package main
+package util
 const DEBUG = true

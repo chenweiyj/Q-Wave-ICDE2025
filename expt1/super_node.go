@@ -1,4 +1,4 @@
-package main
+package expt1
 
 import (
 	"bufio"
@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	. "chain/util/const"
 )
 
 type SendMessage struct {
@@ -190,11 +192,11 @@ func (node *SuperNode) processStream(rw *bufio.ReadWriter) {
 
 			switch mType {
 			case 1:
-				go superNode.recvBlock(str)
+				go node.recvBlock(str)
 			case 2:
-				go superNode.recvVote(str)
+				go node.recvVote(str)
 			case 3:
-				go superNode.recvDone(str)
+				go node.recvDone(str)
 			}
 		}
 	}
@@ -241,7 +243,7 @@ func (node *SuperNode) recvVote(str string) {
 	// broadcast vote to all clients
 	index := len(str) - 1
 	// vote: "[TYPE][client][total]\n"
-	vote := fmt.Sprintf("%s%d%s", str[:index], len(superNode.clientGroup[node.sGroupIndex]), str[index:])
+	vote := fmt.Sprintf("%s%d%s", str[:index], len(node.clientGroup[node.sGroupIndex]), str[index:])
 	for i := 0; i < len(node.clientGroup); i++ {
 		g := node.clientGroup[i]
 		for _, m := range g {

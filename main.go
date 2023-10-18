@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	. "chain/expt2"
 	"context"
 	"crypto/rand"
 	"flag"
@@ -38,7 +39,7 @@ func handleStream(s network.Stream) {
 	ch <- rw
 	log.Println("send rw done", rw)
 
-	go superNode.processStream(rw)
+	go superNode.ProcessStream(rw)
 
 	// stream 's' will stay open until you close it (or the other side closes it).
 }
@@ -53,6 +54,7 @@ func main() {
 	debug := flag.Bool("debug", true, "Debug generates the same node ID on every execution")
 	clients := flag.Int("c", 70, "number of clients")
 	times := flag.Int("times", 1, "number of running epochs")
+	delay := flag.Int("delay", 0, "super node message sending delay")
 
 	flag.Parse()
 
@@ -96,7 +98,7 @@ func main() {
 				}
 			}
 			log.Println("start supernode process")
-			superNode.process(*times)
+			superNode.Process(*times)
 		}()
 
 		// go func() {
@@ -106,7 +108,7 @@ func main() {
 		// }()
 	} else {
 
-		controlclients(*clients, *dest)
+		controlclients(*clients, *dest, *delay)
 	}
 
 	// Wait forever
@@ -204,11 +206,11 @@ func createSuperNode(clientNo int) *SuperNode {
 		for i := 0; i < clientNo; i++ {
 			log.Println("get rw from channel", i, clientNo)
 			rw := <-ch
-			node.streams[i] = rw
+			node.Streams[i] = rw
 			log.Println("get rw done", rw)
 		}
 		log.Println("done creating rw")
-		log.Println(node.streams)
+		log.Println(node.Streams)
 	}()
 
 	return node
@@ -254,7 +256,7 @@ func startPeerAndConnect(ctx context.Context, h host.Host, destination string) (
 	return rw, nil
 }
 
-func controlclients(clients int, dest string) {
+func controlclients(clients int, dest string, delay int) {
 	n := atomic.Int32{}
 	wg := sync.WaitGroup{}
 	for i := 0; i < clients; i++ {
@@ -262,7 +264,7 @@ func controlclients(clients int, dest string) {
 		go func(i int) {
 			time.Sleep(time.Duration(i%100) * 100 * time.Millisecond)
 			defer wg.Done()
-			err := newClientChat(dest, i)
+			err := newClientChat(dest, i, delay)
 			if err != nil {
 				panic(err)
 			}
@@ -274,7 +276,7 @@ func controlclients(clients int, dest string) {
 	wg.Wait()
 }
 
-func newClientChat(dest string, clientNo int) error {
+func newClientChat(dest string, clientI int, delay int) error {
 	// client
 	var err error
 	ctx := context.Background()
@@ -293,8 +295,8 @@ func newClientChat(dest string, clientNo int) error {
 	// Create a thread to read and write data.
 	// go writeData(rw, clientNo)
 	// go readData(rw)
-	clientNode := NewClientNode(rw)
-	go clientNode.process()
+	clientNode := NewClientNode(rw, delay, clientI)
+	go clientNode.Process()
 
 	//c.Close()
 	return nil
