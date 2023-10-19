@@ -1,4 +1,4 @@
-package expt2
+package expt9
 
 import (
 	"bufio"
@@ -22,11 +22,13 @@ type SendMessage struct {
 }
 
 type SuperNode struct {
-	Streams     []*bufio.ReadWriter
-	clientNo    int
-	groupCount  int
-	clientGroup [][]int
-	doneChan    chan int
+	Streams       []*bufio.ReadWriter
+	N             int
+	clientNo      int
+	bigGroupCount int
+	groupCount    int
+	clientGroup   [][]int
+	doneChan      chan int
 	// selected group, selected leader
 	sGroupIndex int
 	sLeader     int
@@ -40,18 +42,20 @@ type SuperNode struct {
 	wgReceivers sync.WaitGroup
 }
 
-func NewSuperNode(clientNo int) *SuperNode {
-	groupCount := 65
-	clientGroup := make([][]int, groupCount)
-	for i := range clientGroup {
-		clientGroup[i] = []int{}
-	}
+func NewSuperNode(N int) *SuperNode {
+	bigGroupCount := 17
+	groupCount := 14
 
-	streams := make([]*bufio.ReadWriter, clientNo)
+	clientGroup := clearClientGroup(groupCount)
+
+	streams := make([]*bufio.ReadWriter, N)
 
 	return &SuperNode{
 		streams,
-		clientNo, groupCount, clientGroup,
+		N,
+		0,
+		bigGroupCount, groupCount,
+		clientGroup,
 		nil,
 		0, 0,
 		0, // nSLeader
@@ -61,17 +65,19 @@ func NewSuperNode(clientNo int) *SuperNode {
 	}
 }
 
-func (node *SuperNode) clear() {
-	clientGroup := make([][]int, node.groupCount)
+func clearClientGroup(groupCount int) [][]int {
+	clientGroup := make([][]int, groupCount)
 	for i := range clientGroup {
 		clientGroup[i] = []int{}
 	}
-	node.clientGroup = clientGroup
+	return clientGroup
+}
+
+func (node *SuperNode) clear() {
+	node.clientGroup = clearClientGroup(node.groupCount)
 	node.sGroupIndex = 0
 	node.sLeader = 0
 	node.doneChan = make(chan int)
-
-	node.nSLeader = rand.Int() % node.clientNo
 
 	node.sendMsgCh = make(chan *SendMessage, 100)
 
@@ -79,6 +85,40 @@ func (node *SuperNode) clear() {
 	// stopCh is an additional signal channel.
 	// Its sender is the receiver of channel dataCh.
 	// Its reveivers are the senders of channel dataCh.
+}
+
+func (node *SuperNode) makeClientGroup() {
+	groupQ := node.N / node.bigGroupCount
+
+	flags := make([]bool, node.N)
+	q := groupQ / node.groupCount // at least q nodes in a group
+
+	for i := 0; i < node.groupCount; i++ {
+		for taken := 0; taken < q; {
+			picked := rand.Intn(node.N)
+			if !flags[picked] {
+				flags[picked] = true
+				taken++
+				node.clientGroup[i] = append(node.clientGroup[i], picked)
+			}
+		}
+	}
+	r := groupQ - node.groupCount*q
+	// deal with remaining {r} client
+	for r > 0 {
+		picked := rand.Intn(node.N)
+		if !flags[picked] {
+			group := rand.Int() % node.groupCount
+			node.clientGroup[group] = append(node.clientGroup[group], picked)
+			r--
+		}
+	}
+
+	// 记录大组数量
+	node.clientNo = 0
+	for _, v := range node.clientGroup {
+		node.clientNo += len(v)
+	}
 }
 
 var totalMessages atomic.Int64
@@ -108,6 +148,8 @@ func (node *SuperNode) Process(times int) {
 			totalMessages.Store(0)
 			tttm = 0
 		}
+
+		node.doBroadcastWithIndex("[DEBUG]send INDEX msg:")
 
 		d, isTimeout := node.doRepeatProcess()
 		if !isTimeout {
@@ -141,37 +183,21 @@ func (node *SuperNode) Process(times int) {
 	w.WriteAll(data)
 }
 
-func (node *SuperNode) makeClientGroup() {
-	flags := make([]bool, node.clientNo)
-	q := node.clientNo / node.groupCount // at least q nodes in a group
-
-	for i := 0; i < node.groupCount; i++ {
-		for taken := 0; taken < q; {
-			picked := rand.Intn(node.clientNo)
-			if !flags[picked] {
-				flags[picked] = true
-				taken++
-				node.clientGroup[i] = append(node.clientGroup[i], picked)
-			}
-		}
-	}
-	// deal with remaining {r} client
-	for i, v := range flags {
-		if !v {
-			group := rand.Int() % node.groupCount
-			node.clientGroup[group] = append(node.clientGroup[group], i)
-		}
-	}
-}
-
 func (node *SuperNode) doRepeatProcess() (time.Duration, bool) {
 	// 1. start time measurement
 	start := time.Now()
 	// ... do experiment process
+	// 选择一组的leader
 	node.sGroupIndex = rand.Int() % node.groupCount
 	sGroup := node.clientGroup[node.sGroupIndex]
 	sLeaderIndex := rand.Int() % len(sGroup)
 	node.sLeader = sGroup[sLeaderIndex]
+
+	// 选择全网learder
+	i := rand.Int() % len(node.clientGroup)
+	j := rand.Int() % len(node.clientGroup[i])
+	node.nSLeader = node.clientGroup[i][j]
+
 	// send to leader
 	if DEBUG {
 		log.Println("[DEBUG]send to leader", node.sLeader)
@@ -237,12 +263,36 @@ func (node *SuperNode) ProcessStream(rw *bufio.ReadWriter) {
 			case message.BLOCK0:
 				go node.recvBlock0(str)
 			case message.VOTE0:
-				go node.recvVote(str, len(node.clientGroup[node.sGroupIndex]))
+				go node.recvVote(str, node.clientNo)
 			case message.E:
 				go node.recvE(str)
 			case message.E1:
 				go node.recvE1(str)
 			}
+		}
+	}
+}
+
+func (node *SuperNode) doBroadcastWithIndex(debugInfo string) {
+	for i := 0; i < len(node.clientGroup); i++ {
+		g := node.clientGroup[i]
+		for _, m := range g {
+			node.wgReceivers.Add(1)
+			go func(m int) {
+				defer node.wgReceivers.Done()
+
+				s := fmt.Sprintf("%d%05d\n", message.I_INDEX, m)
+				if DEBUG {
+					log.Print(debugInfo, "type=", s[:1], " msg:", s)
+				}
+
+				//TODO: 给发送的节点记录票数
+				select {
+				case <-node.stopCh:
+					return
+				case node.sendMsgCh <- &SendMessage{m: m, s: s}:
+				}
+			}(m)
 		}
 	}
 }
@@ -274,14 +324,16 @@ func (node *SuperNode) doBroadcast(s string, debugInfo string) {
 func (node *SuperNode) recvBlock0(str string) {
 	// block0: "[TYPE][CREATE_VOTE][client]\n"
 	t, _ := strconv.Atoi(str[:1])
-	node.sendBlock2SGroup(str, message.MessageType(t))
+	// node.sendBlock2SGroup(str, message.MessageType(t))
+	// 相当于每个小组的节点都做vote
+	node.sendBlock2All(str, message.MessageType(t), 1)
 }
 
 // block: "[TYPE]\n"
 func (node *SuperNode) recvBlock(str string) {
 	// block: "[TYPE][CREATE_VOTE][client]\n"
 	t, _ := strconv.Atoi(str[:1])
-	node.sendBlock2All(str, message.MessageType(t))
+	node.sendBlock2All(str, message.MessageType(t), 1)
 }
 
 func (node *SuperNode) sendBlock2SGroup(str string, mType message.MessageType) {
@@ -308,7 +360,7 @@ func (node *SuperNode) sendBlock2SGroup(str string, mType message.MessageType) {
 	}
 }
 
-func (node *SuperNode) sendBlock2All(str string, mType message.MessageType) {
+func (node *SuperNode) sendBlock2All(str string, mType message.MessageType, isOthersDoVote int) {
 	// 1. send block to sGroup members
 	node.sendBlock2SGroup(str, mType)
 
@@ -322,7 +374,7 @@ func (node *SuperNode) sendBlock2All(str string, mType message.MessageType) {
 					defer node.wgReceivers.Done()
 
 					// block: "[TYPE][CREATE_VOTE][client]\n"
-					s := fmt.Sprintf("%d%d%05d\n", mType, 1, m)
+					s := fmt.Sprintf("%d%d%05d\n", mType, isOthersDoVote, m)
 					if DEBUG {
 						log.Println("[DEBUG]send block msg to others:", s)
 					}
@@ -350,6 +402,7 @@ func (node *SuperNode) recvVote(str string, total int) {
 // E: "[TYPE=E][vote_client][nodeE_client]\n"
 func (node *SuperNode) recvE(str string) {
 	// E: [TYPE=E][vote_client][nodeE_client][N_client_total]\n
+	// 7 00455 00374 00500
 	s := fmt.Sprintf("%s%05d\n", str[:len(str)-1], node.clientNo)
 	node.doBroadcast(s, "[DEBUG]send E msg:")
 }
@@ -358,7 +411,7 @@ func (node *SuperNode) recvE(str string) {
 func (node *SuperNode) recvE1(str string) {
 	// broadcast E1: "[TYPE=E1][vote_client][nodeE1_client][N_sLeader][E1_total]\n"
 	index := len(str) - 1
-	s := fmt.Sprintf("%s%05d%d\n", str[:index], node.nSLeader, node.clientNo*len(node.clientGroup[node.sGroupIndex]))
+	s := fmt.Sprintf("%s%05d%d\n", str[:index], node.nSLeader, node.clientNo)
 	node.doBroadcast(s, "[DEBUG]send E1 msg:")
 }
 

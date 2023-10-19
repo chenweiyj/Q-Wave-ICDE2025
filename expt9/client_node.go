@@ -1,10 +1,11 @@
-package expt2
+package expt9
 
 import (
 	"bufio"
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,11 @@ type ClientNode struct {
 	eMessageCountForVote    map[int]int
 	eMessageForVoteFinished map[int]bool
 	e1MessageCount          atomic.Int32
+
+	isRecvEDone atomic.Bool
+	isDone atomic.Bool
+
+	onceSendE1 *sync.Once
 }
 
 func NewClientNode(rw *bufio.ReadWriter, delay int, client int) *ClientNode {
@@ -58,12 +64,14 @@ func (c *ClientNode) clear() {
 	}
 	c.eMessageCountForVote = make(map[int]int)
 	c.eMessageForVoteFinished = make(map[int]bool)
+	c.isRecvEDone.Store(false)
+
+	c.onceSendE1 = &sync.Once{}
 }
 
 func (c *ClientNode) Process() {
 	msgCh := make(chan string)
-	var isDone atomic.Bool
-	isDone.Store(true)
+	c.isDone.Store(true)
 
 	go func(msgCh chan string) {
 		for {
@@ -73,30 +81,30 @@ func (c *ClientNode) Process() {
 
 				// check number
 				if DEBUG {
-					log.Println("[DEBUG]check done condition for client:", c.client, "isDone=", isDone.Load(), "votesCount=", len(c.votes), "totalVotes=", c.total, "isBlockEmpty=", !c.isReceivedBlock.Load())
+					log.Println("[DEBUG]check done condition for client:", c.client, "isDone=", c.isDone.Load(), "votesCount=", len(c.votes), "totalVotes=", c.total, "isBlockEmpty=", !c.isReceivedBlock.Load())
 				}
-				if !isDone.Load() && len(c.votes) >= 2*c.total/3 && c.block != "" {
+				if !c.isDone.Load() && len(c.votes) >= 2*c.total/3 && c.block != "" {
 					// send done to super node
 					// done: "[TYPE][my_client]\n"
 					s := fmt.Sprintf("%d%05d\n", message.DONE, c.client)
 
 					c.sendMessage(s, message.DONE)
 
-					isDone.Store(true)
+					c.isDone.Store(true)
 					c.clear()
 					time.Sleep(time.Second)
 				} else {
-					isDone.Store(false)
+					c.isDone.Store(false)
 				}
-			case <-time.After(10 * time.Second):
-				// 设置超时，避免因丢包收不到足够的消息而卡住
-				if !isDone.Load() {
-					if DEBUG {
-						log.Println("[ERROR]client timeout")
-					}
-					isDone.Store(true)
-					c.clear()
-				}
+			// case <-time.After(10 * time.Second):
+			// 	// 设置超时，避免因丢包收不到足够的消息而卡住
+			// 	if !isDone.Load() {
+			// 		if DEBUG {
+			// 			log.Println("[ERROR]client timeout")
+			// 		}
+			// 		isDone.Store(true)
+			// 		c.clear()
+			// 	}
 			}
 		}
 
@@ -113,6 +121,8 @@ func (c *ClientNode) Process() {
 func (c *ClientNode) recvMsg(msg string) {
 	mType, _ := strconv.Atoi(msg[:1])
 	switch message.MessageType(mType) {
+	case message.I_INDEX:
+		c.recvIndex(msg)
 	case message.LEADER:
 		c.recvLeader()
 	case message.BLOCK:
@@ -128,6 +138,12 @@ func (c *ClientNode) recvMsg(msg string) {
 	case message.E1:
 		c.recvE1(msg)
 	}
+}
+
+// "[TYPE][index]"
+func (c *ClientNode) recvIndex(str string) {
+	i, _ := strconv.Atoi(str[1:6])
+	c.client = i
 }
 
 // leader: "[TYPE]\n"
@@ -212,40 +228,54 @@ func (c *ClientNode) recvVote(str string) {
 
 // E: [TYPE=E][vote_client][nodeE_client][N_client_total]\n
 func (c *ClientNode) recvE(str string) {
-	// wait for 2/3*N E message
+	// wait for 1/2*(N) E message
 	voteClient, _ := strconv.Atoi(str[1:6])
 	nClientTotal, _ := strconv.Atoi(str[len(str)-6 : len(str)-1])
 
 	c.eMessageCountForVote[voteClient]++
 	voteCount := c.eMessageCountForVote[voteClient]
-	if DEBUG {
-		log.Printf("[DEBUG]received %s message: %s for client: %d votes count: %d total: %d\n", message.E.String(), str, c.client, voteCount, nClientTotal)
+
+	if voteCount >= nClientTotal/2 && !c.eMessageForVoteFinished[voteClient] {
+		c.eMessageForVoteFinished[voteClient] = true
 	}
 
-	if voteCount >= 2*nClientTotal/3 && !c.eMessageForVoteFinished[voteClient] {
-		c.eMessageForVoteFinished[voteClient] = true
-		// send E1 message
-		// E1: [TYPE=E1][vote_client][nodeE1_client]\n
-		s := fmt.Sprintf("%d%05d%05d\n", message.E1, voteClient, c.client)
-		c.sendMessage(s, message.E1)
+	flag := false
+	if len(c.eMessageForVoteFinished) >= nClientTotal {
+		flag = true
 	}
+
+	if DEBUG {
+		log.Printf("[DEBUG]received %s message: %s for client: %d votes count: %d total: %d, flag: %v, c.eMessageForVoteFinished:%v, c.isRecvEDone:%v\n", message.E.String(), str, c.client, voteCount, nClientTotal, flag, c.eMessageForVoteFinished, c.isRecvEDone.Load())
+	}
+
+	if flag {
+		if c.isRecvEDone.CompareAndSwap(false, flag) {
+			// send E1 message
+			// E1: [TYPE=E1][vote_client][nodeE1_client]\n
+			s := fmt.Sprintf("%d%05d%05d\n", message.E1, voteClient, c.client)
+			c.sendMessage(s, message.E1)
+		}
+	}
+
 }
-// 8 01346 01449 00481 34500
-// 8 01040 00255 01007 22800
+
 // E1: "[TYPE=E1][vote_client][nodeE1_client][N_sLeader][E1_total]\n"
 func (c *ClientNode) recvE1(str string) {
 	nSLeader, _ := strconv.Atoi(str[11:16])
 	e1Total, _ := strconv.Atoi(str[16:len(str)-1])
-	if nSLeader == c.client {
+	if nSLeader == c.client && !c.isDone.Load() {
 		c.e1MessageCount.Add(1)
 		if DEBUG {
 			log.Println("[DEBUG]N_sLeader E1 message count:", c.e1MessageCount.Load(), " total:", e1Total)
 		}
-		if e1Total == int(c.e1MessageCount.Load()) {
-			// BLOCK: "[TYPE]\n"
-			s := fmt.Sprintf("%d\n", message.BLOCK)
+		// 多次条件判断进入这里，发了多次block消息，控制只发一次
+		if int(c.e1MessageCount.Load()) >= e1Total {
+			c.onceSendE1.Do(func() {
+				// BLOCK: "[TYPE]\n"
+				s := fmt.Sprintf("%d\n", message.BLOCK)
 
-			c.sendMessage(s, message.BLOCK)
+				c.sendMessage(s, message.BLOCK)
+			})
 		}
 	}
 }

@@ -15,6 +15,7 @@ const (
 	VOTE0
 	E
 	E1
+	I_INDEX
 )
 
 func (m MessageType) StringTest() string {
@@ -31,5 +32,5 @@ func (m MessageType) String() string {
 		"BLOCK0",
 		"VOTE0",
 		"E",
-		"E1"}[m]
+		"E1", "I_INDEX"}[m]
 }

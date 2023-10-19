@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	. "chain/expt2"
+	. "chain/expt9"
 	"context"
 	"crypto/rand"
 	"flag"

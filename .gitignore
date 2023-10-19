@@ -47,3 +47,4 @@ go.work
 
 chain
 **/*.log
+records.csv
